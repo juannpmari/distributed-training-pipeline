@@ -1,45 +1,38 @@
-from core.distributed import init_distributed
-from core.config import load_config
-from core.paths import build_run_paths
-from core.logging import setup_logger
-from core.run_context import RunContext
-import uuid
-import os
+# train.py
+from pathlib import Path
+
+from core.config import resolve_config
+from core.seeding import seed_everything
+from core.run_context import create_run_context
+from core.distributed.env import get_distributed_context
 
 def main():
-    dist = init_distributed()
+    dist = get_distributed_context()
 
-    cfg = load_config("config.yaml")
-
-    run_id = f"{cfg['name']}-{uuid.uuid4().hex[:8]}"
-    paths = build_run_paths(cfg["output_dir"], run_id)
-
-    if dist.is_master():
-        for p in paths.values():
-            os.makedirs(p, exist_ok=True)
-
-    logger = setup_logger(
-        name="train",
-        log_file=str(paths["logs"] / f"rank{dist.global_rank}.log"),
-        is_master=dist.is_master(),
+    cfg = resolve_config(
+        base_config_path=Path("configs/train.yaml"),
+        overrides={},  # CLI/env overrides later
     )
 
-    ctx = RunContext(
-        distributed=dist,
-        config=cfg,
-        run_id=run_id,
-        paths=paths,
-        logger=logger,
+    run_ctx = create_run_context(
+        base_dir=Path("runs"),
+        experiment_name="llm_pretrain",
+        resolved_config=cfg.to_dict(),
     )
 
-    logger.info("RunContext initialized")
+    cfg.save_yaml(run_ctx.root_dir / "resolved_config.yaml")
+
+    effective_seed = seed_everything(
+        base_seed=cfg.data["seed"],
+        rank=dist.rank,
+        deterministic=True,
+    )
+
+    if dist.is_rank_zero:
+        print(f"Run {run_ctx.run_id} | seed={effective_seed}")
+
+    # continue to Step 3 (model, optimizer, data)
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        # Fail fast, fail loudly (production-style)
-        print("FATAL ERROR during training startup", file=sys.stderr)
-        traceback.print_exc()
-        sys.exit(1)
+    main()

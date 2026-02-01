@@ -94,52 +94,40 @@ The `/core` directory contains the **foundational runtime primitives** of the tr
 Everything here is **model-agnostic**, **algorithm-agnostic**, and designed to be reused across all pipelines.  
 Higher-level components (pipelines, training loops, models) depend on `/core`, never the other way around.
 
----
+This repository enforces **strong reproducibility guarantees** inspired by large-scale training systems used in research labs.
 
-### `core/config.py`
-**Role:** Load and freeze experiment configuration.  
-**Inputs:** Path to a YAML config file.  
-**Outputs:** An immutable configuration object (read-only mapping).  
-**Interactions:**  
-- Consumed by `train.py` and `RunContext`
-- Used indirectly by all pipeline components via `RunContext`
+### Configuration system
+All training runs are driven by a **single resolved YAML configuration**:
+- Base configs are loaded from YAML
+- Overrides are applied via deep merge
+- The final configuration is fully explicit and immutable
+- Every run saves its resolved config to disk
 
----
+This ensures runs are **comparable, debuggable, and replayable**.
 
-### `core/paths.py`
-**Role:** Define the canonical filesystem layout for a run.  
-**Inputs:** Base output directory, run ID.  
-**Outputs:** A dictionary of resolved paths (`root`, `logs`, `checkpoints`, `artifacts`).  
-**Interactions:**  
-- Used during run bootstrap
-- Paths are stored in `RunContext` and reused by logging, checkpointing, and artifacts
+Relevant files:
+- `core/config.py`  
+  Loads YAML configs, applies overrides, validates required fields, and produces an immutable `FrozenConfig`.
 
----
+### Deterministic seeding
+Randomness is controlled centrally and deterministically:
+- Python, NumPy, and PyTorch (CPU + CUDA) are seeded
+- Seeds are rank-aware (`base_seed + global_rank`)
+- cuDNN deterministic flags are enforced
 
-### `core/logging.py`
-**Role:** Configure rank-aware logging.  
-**Inputs:** Logger name, optional log file path, `is_master` flag.  
-**Outputs:** A configured Python `logging.Logger`.  
-**Interactions:**  
-- Initialized during run bootstrap
-- Logger is stored in `RunContext`
-- Used by all downstream components for structured logging
+Relevant files:
+- `core/seeding.py`  
+  Implements rank-aware, deterministic seeding for distributed runs.
 
----
+### Run context & reproducibility
+Each run has a unique, deterministic identity:
+- Run ID includes timestamp + hash of resolved config
+- All artifacts (logs, checkpoints, configs) live under a single run directory
+- The resolved config is persisted verbatim
 
-### `core/run_context.py`
-**Role:** Represent the execution context of a single run.  
-**Inputs:**  
-- `DistributedContext`  
-- Frozen config  
-- Run ID  
-- Paths  
-- Logger  
-**Outputs:** A `RunContext` object passed through the pipeline.  
-**Interactions:**  
-- Depends on `core.distributed`
-- Acts as the glue between distributed state, config, logging, and filesystem
-- Passed explicitly to pipelines, trainers, and utilities
+Relevant files:
+- `core/run_context.py`  
+  Creates the run directory structure and binds run identity to configuration state.
 
 ---
 
