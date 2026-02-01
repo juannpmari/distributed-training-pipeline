@@ -60,6 +60,15 @@ Each layer is explicit:
 
 ---
 
+## Execution flow (high level)
+
+1. `train.py` calls `init_distributed()` → creates `DistributedContext`
+2. Config, paths, and logging are initialized
+3. `RunContext` is constructed from these components
+4. The rest of the training system operates solely on `RunContext`
+
+This separation ensures clarity, reproducibility, and correctness across single-GPU, multi-GPU, and multi-node runs.
+
 ## Entrypoint
 
 ### `train.py`
@@ -78,133 +87,118 @@ Each layer is explicit:
 - A fully initialized training run
 - Exit status with rich diagnostics on failure
 
-**Design principle**
-> `train.py` is intentionally thin. It should read like a story, not an implementation.
 
----
+## Core runtime (`/core`)
 
-## Core Layer (Hard Edges)
-
-The `core/` package defines **global invariants**.  
-Nothing here depends on higher-level modules.
+The `/core` directory contains the **foundational runtime primitives** of the training system.  
+Everything here is **model-agnostic**, **algorithm-agnostic**, and designed to be reused across all pipelines.  
+Higher-level components (pipelines, training loops, models) depend on `/core`, never the other way around.
 
 ---
 
 ### `core/config.py`
-
-**Role**
-- Load and validate YAML configurations
-- Resolve defaults and derived values
-- Freeze configuration for reproducibility
-
-**Inputs**
-- YAML config files
-- Optional CLI overrides
-
-**Outputs**
-- Immutable configuration object
-
-**Used by**
-- All other modules
+**Role:** Load and freeze experiment configuration.  
+**Inputs:** Path to a YAML config file.  
+**Outputs:** An immutable configuration object (read-only mapping).  
+**Interactions:**  
+- Consumed by `train.py` and `RunContext`
+- Used indirectly by all pipeline components via `RunContext`
 
 ---
 
-### `core/run_context.py`
-
-**Role**
-- Define *what a training run is*
-- Generate semantic + hash-based run IDs
-- Create run directory structure
-
-**Inputs**
-- Configuration
-- Git metadata (commit hash, dirty state)
-- Environment metadata
-
-**Outputs**
-- Run ID
-- Paths for:
-  - logs
-  - checkpoints
-  - artifacts
-  - metrics
-
----
-
-### `core/distributed_context.py`
-
-**Role**
-- Single source of truth for distributed state
-- Abstracts `torch.distributed` details
-
-**Inputs**
-- Configuration
-- Environment variables
-
-**Outputs**
-- Rank / world size
-- Process group handles
-- Utilities (`is_main_rank`, `barrier`, `all_reduce`, etc.)
+### `core/paths.py`
+**Role:** Define the canonical filesystem layout for a run.  
+**Inputs:** Base output directory, run ID.  
+**Outputs:** A dictionary of resolved paths (`root`, `logs`, `checkpoints`, `artifacts`).  
+**Interactions:**  
+- Used during run bootstrap
+- Paths are stored in `RunContext` and reused by logging, checkpointing, and artifacts
 
 ---
 
 ### `core/logging.py`
-
-**Role**
-- Unified logging interface
-- Dual-channel logging:
-  - Human-readable logs
-  - Structured metrics/events
-
-**Inputs**
-- RunContext
-- DistributedContext
-- Log events
-
-**Outputs**
-- Log files
-- Structured metric records
+**Role:** Configure rank-aware logging.  
+**Inputs:** Logger name, optional log file path, `is_master` flag.  
+**Outputs:** A configured Python `logging.Logger`.  
+**Interactions:**  
+- Initialized during run bootstrap
+- Logger is stored in `RunContext`
+- Used by all downstream components for structured logging
 
 ---
 
-### `core/exceptions.py`
-
-**Role**
-- Define semantic error types
-- Attach contextual diagnostics to failures
-
-**Outputs**
-- Structured, debuggable exceptions
-
----
-
-## Distributed Layer (Systems)
-
-Owns **how processes communicate and synchronize**.
-
----
-
-### `distributed/init.py`
-
-**Role**
-- Initialize `torch.distributed`
-- Validate environment consistency
-
-**Outputs**
-- Initialized process group
+### `core/run_context.py`
+**Role:** Represent the execution context of a single run.  
+**Inputs:**  
+- `DistributedContext`  
+- Frozen config  
+- Run ID  
+- Paths  
+- Logger  
+**Outputs:** A `RunContext` object passed through the pipeline.  
+**Interactions:**  
+- Depends on `core.distributed`
+- Acts as the glue between distributed state, config, logging, and filesystem
+- Passed explicitly to pipelines, trainers, and utilities
 
 ---
 
-### `distributed/process_groups.py`
+## Distributed runtime (`/core/distributed`)
 
-**Role**
-- Define logical communication groups:
-  - Data parallel groups
-  - FSDP groups
-  - (Future) tensor parallel groups
+The `distributed` submodule encapsulates **all distributed execution concerns**.  
+No other part of the codebase reads environment variables or touches `torch.distributed` directly.
 
-**Outputs**
-- Named process groups
+---
+
+### `core/distributed/env.py`
+**Role:** Discover and normalize distributed environment variables.  
+**Inputs:** Process environment (e.g. `RANK`, `WORLD_SIZE`).  
+**Outputs:** A normalized dictionary describing the distributed setup.  
+**Interactions:**  
+- Used only by `init.py`
+- Abstracts over different launch styles (single-GPU, `torchrun`)
+
+---
+
+### `core/distributed/utils.py`
+**Role:** Centralize small distributed policies.  
+**Inputs:** Runtime state (e.g. CUDA availability).  
+**Outputs:** Backend choice (`nccl` / `gloo`), default timeouts.  
+**Interactions:**  
+- Used by process group initialization
+- Keeps policy decisions isolated and changeable
+
+---
+
+### `core/distributed/process_group.py`
+**Role:** Initialize PyTorch process groups.  
+**Inputs:** Backend, world size, global rank.  
+**Outputs:** A fully initialized `torch.distributed` runtime.  
+**Interactions:**  
+- Called only from `init.py`
+- No other module initializes or touches process groups
+
+---
+
+### `core/distributed/context.py`
+**Role:** Hold immutable facts about distributed execution.  
+**Inputs:** Ranks, world size, topology assumptions, backend.  
+**Outputs:** A frozen `DistributedContext` object.  
+**Interactions:**  
+- Created during distributed initialization
+- Embedded inside `RunContext`
+- Used throughout the system to reason about rank, master status, and topology
+
+---
+
+### `core/distributed/init.py`
+**Role:** Bootstrap distributed execution (Step 1).  
+**Inputs:** Environment variables, CUDA availability.  
+**Outputs:** A fully constructed `DistributedContext`.  
+**Interactions:**  
+- Orchestrates `env.py`, `utils.py`, and `process_group.py`
+- Called exactly once at the start of `train.py`
+- Must run before any model, data, or pipeline code
 
 ---
 
