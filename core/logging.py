@@ -1,19 +1,21 @@
 # core/logging.py
 import logging
-from pathlib import Path
+import sys
 
+def setup_logger(name: str, log_file: str | None, is_master: bool):
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
 
-def setup_logging(log_dir: Path, rank: int):
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / f"rank_{rank}.log"
+    if is_master:
+        handler = logging.StreamHandler(sys.stdout)
+    else:
+        handler = logging.FileHandler(log_file)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s",
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler(),
-        ],
+    formatter = logging.Formatter(
+        "[%(asctime)s][%(levelname)s] %(message)s"
     )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
-    logging.info("Logging initialized")
+    return logger

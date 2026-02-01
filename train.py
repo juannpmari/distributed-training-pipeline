@@ -1,54 +1,38 @@
-#!/usr/bin/env python3
-
-import sys
-import traceback
-
-import torch
-
 from core.distributed import init_distributed
-
+from core.config import load_config
+from core.paths import build_run_paths
+from core.logging import setup_logger
+from core.run_context import RunContext
+import uuid
+import os
 
 def main():
-    """
-    Top-level training entrypoint.
+    dist = init_distributed()
 
-    Responsibilities:
-    - initialize distributed runtime
-    - establish process identity
-    - act as lifecycle root (everything hangs off this)
-    """
+    cfg = load_config("config.yaml")
 
-    # ------------------------------------------------------------------
-    # Step 1: Distributed initialization (BOOTSTRAP PHASE)
-    # ------------------------------------------------------------------
-    ctx = init_distributed()
+    run_id = f"{cfg['name']}-{uuid.uuid4().hex[:8]}"
+    paths = build_run_paths(cfg["output_dir"], run_id)
 
-    # ------------------------------------------------------------------
-    # Sanity logging (temporary; later replaced by logging module)
-    # ------------------------------------------------------------------
-    if ctx.is_master():
-        print("=" * 80)
-        print("Training job started")
-        print(f"World size      : {ctx.world_size}")
-        print(f"Num nodes       : {ctx.num_nodes}")
-        print(f"GPUs per node   : {ctx.gpus_per_node}")
-        print(f"Backend         : {ctx.backend}")
-        print("=" * 80)
+    if dist.is_master():
+        for p in paths.values():
+            os.makedirs(p, exist_ok=True)
 
-    print(
-        f"[rank={ctx.global_rank} | local_rank={ctx.local_rank}] "
-        f"CUDA device = {torch.cuda.current_device() if torch.cuda.is_available() else 'cpu'}"
+    logger = setup_logger(
+        name="train",
+        log_file=str(paths["logs"] / f"rank{dist.global_rank}.log"),
+        is_master=dist.is_master(),
     )
 
-    # ------------------------------------------------------------------
-    # Placeholder for Step 2+
-    # ------------------------------------------------------------------
-    # build_pipeline(ctx)
-    # run_training_loop(ctx)
-    # handle_shutdown(ctx)
+    ctx = RunContext(
+        distributed=dist,
+        config=cfg,
+        run_id=run_id,
+        paths=paths,
+        logger=logger,
+    )
 
-    if ctx.is_master():
-        print("Initialization complete. Ready for next steps.")
+    logger.info("RunContext initialized")
 
 
 if __name__ == "__main__":

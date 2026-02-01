@@ -1,24 +1,12 @@
-from dataclasses import dataclass
-from typing import Any, Dict
+# core/config.py
 import yaml
-from pathlib import Path
+from types import MappingProxyType
 
-@dataclass(frozen=True)
-class Config:
-    raw: Dict[str, Any]
-    config_path: Path
+def load_config(path: str):
+    with open(path, "r") as f:
+        cfg = yaml.safe_load(f)
 
-def load_config(path: str) -> Config:
-    path = Path(path).resolve()
-    if not path.exists():
-        raise FileNotFoundError(f"Config file not found: {path}")
-
-    with path.open("r") as f:
-        raw = yaml.safe_load(f)
-
-    if raw is None:
-        raw = {}
-
-    return Config(raw=raw, config_path=path)
+    # Shallow immutability (enough for now)
+    return MappingProxyType(cfg)
 
 
