@@ -214,84 +214,101 @@ This enforces a **single distributed authority** across the codebase.
 Primary interface:
 - `DistributedContext`
 
-## Data Layer (Pipeline-First)
+## Data Pipeline
 
-This layer mirrors **production LLM training pipelines**.
+This repository implements a **streaming, rank-aware data pipeline** designed for large-scale language model training.  
+The data layer is treated as a **stateful distributed system** with explicit correctness and resume guarantees.
 
----
+### Streaming-first design
+All datasets are consumed as **streams**, not as finite indexed collections.
 
-### `data/sources/streaming_source.py`
+**Invariants:**
+- Data is never fully materialized in memory
+- Iteration proceeds monotonically through a global sample stream
+- Epoch-based semantics are not used
+- Dataset size may exceed available memory or local disk
 
-**Role**
-- Stateless raw data access
-- Stream individual samples
-
-**Outputs**
-- Unbatched samples
-
----
-
-### `data/pipeline/stages.py`
-
-**Role**
-- Define pipeline stages:
-  - decode
-  - tokenize
-  - augment
-  - pack
-
-**Inputs**
-- Samples
-
-**Outputs**
-- Transformed samples
+Relevant files:
+- `core/data/sources/streaming_source.py`  
+  Defines the streaming source interface.
+- `core/data/dataset.py`  
+  Adapts streaming sources into PyTorch `IterableDataset`s.
 
 ---
 
-### `data/pipeline/queues.py`
+### Rank-aware deterministic sharding
+Each process consumes a **deterministic shard** of the global data stream.
 
-**Role**
-- Thread/process-safe queues
-- Buffer between stages
+**Invariants:**
+- Sample ownership is determined solely by `(global_rank, world_size)`
+- Sharding is stable and reproducible
+- No coordination or communication is required between ranks
+- Data assignment is independent of worker count or launch style
 
----
-
-### `data/pipeline/backpressure.py`
-
-**Role**
-- Flow control
-- Prevent unbounded memory growth
-
-**Mechanism**
-- Semaphore-based backpressure
+Relevant files:
+- `core/data/sharding.py`  
+  Implements deterministic modulo-based sharding.
 
 ---
 
-### `data/pipeline/pipeline.py`
+### Dataset state & resumption
+Dataset progress is explicitly tracked and checkpointed.
 
-**Role**
-- Orchestrate async minibatch pipeline
-- Spawn workers and manage lifecycle
+**Invariants:**
+- Dataset state is monotonic and append-only
+- Training can resume from an exact global offset
+- Dataset state is owned by the data layer, not the training loop
+- Partial progress is never inferred implicitly
 
-**Outputs**
-- Minibatches for training
+Relevant files:
+- `core/data/state.py`  
+  Defines the serializable dataset cursor.
+- `core/data/factory.py`  
+  Wires dataset state into dataset construction.
+
+---
+
+### World-size changes & replayability
+The data pipeline supports **best-effort replay** when world size changes.
+
+**Contract:**
+- Resuming from a checkpoint with a different world size is allowed
+- Sample-to-rank assignment may change
+- Global ordering and determinism are preserved
+
+This mirrors the behavior of production-scale LLM training systems.
 
 ---
 
-### `data/sharding.py`
+### Pipeline abstraction (forward-compatible)
+The data layer exposes a **pipeline abstraction** for future extension.
 
-**Role**
-- Assign non-overlapping data shards per rank
+**Planned capabilities:**
+- Asynchronous prefetch
+- Multi-stage decoding and preprocessing
+- Bounded queues with backpressure
+- Overlap of data loading and compute
+
+Relevant files:
+- `core/data/pipeline/pipeline.py`
+- `core/data/pipeline/stages.py`
+- `core/data/pipeline/queues.py`
+- `core/data/pipeline/backpressure.py`
+
+These components are intentionally minimal in the current implementation and will be activated incrementally.
 
 ---
 
-### `data/state.py`
+### Integration contract
+The training loop consumes data exclusively through a PyTorch `DataLoader`.  
+All data semantics—streaming, sharding, resumption—are fully encapsulated within the data layer.
 
-**Role**
-- Track dataset progress and RNG state
-- Enable replayable execution
+Training code must not:
+- Index datasets
+- Implement sharding logic
+- Track dataset offsets
+- Assume epoch boundaries
 
----
 
 ## Models Layer (Algorithms)
 
