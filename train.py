@@ -1,54 +1,61 @@
-# train.py
-import argparse
-import logging
+#!/usr/bin/env python3
 
-from core.config import load_config
-from core.run_context import create_run_context
-from core.distributed_context import init_distributed
-from core.logging import setup_logging
+import sys
+import traceback
+
+import torch
+
+from core.distributed import init_distributed
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True)
-    parser.add_argument("--experiment-name", default="experiment")
-    parser.add_argument("--runs-dir", default="runs")
-    args = parser.parse_args()
+    """
+    Top-level training entrypoint.
 
-    # Load config
-    config = load_config(args.config)
+    Responsibilities:
+    - initialize distributed runtime
+    - establish process identity
+    - act as lifecycle root (everything hangs off this)
+    """
 
-    # Init distributed
-    dist_ctx = init_distributed()
+    # ------------------------------------------------------------------
+    # Step 1: Distributed initialization (BOOTSTRAP PHASE)
+    # ------------------------------------------------------------------
+    ctx = init_distributed()
 
-    # Create run context (main rank only)
-    if dist_ctx.is_main_rank():
-        run_ctx = create_run_context(
-            base_dir=args.runs_dir,
-            experiment_name=args.experiment_name,
-            config=config.raw,
-        )
-    else:
-        run_ctx = None
+    # ------------------------------------------------------------------
+    # Sanity logging (temporary; later replaced by logging module)
+    # ------------------------------------------------------------------
+    if ctx.is_master():
+        print("=" * 80)
+        print("Training job started")
+        print(f"World size      : {ctx.world_size}")
+        print(f"Num nodes       : {ctx.num_nodes}")
+        print(f"GPUs per node   : {ctx.gpus_per_node}")
+        print(f"Backend         : {ctx.backend}")
+        print("=" * 80)
 
-    # Barrier so dirs exist
-    dist_ctx.barrier()
+    print(
+        f"[rank={ctx.global_rank} | local_rank={ctx.local_rank}] "
+        f"CUDA device = {torch.cuda.current_device() if torch.cuda.is_available() else 'cpu'}"
+    )
 
-    # Setup logging
-    if run_ctx is not None:
-        log_dir = run_ctx.logs_dir
-    else:
-        # non-main ranks infer run dir later; temporary fallback
-        log_dir = None
+    # ------------------------------------------------------------------
+    # Placeholder for Step 2+
+    # ------------------------------------------------------------------
+    # build_pipeline(ctx)
+    # run_training_loop(ctx)
+    # handle_shutdown(ctx)
 
-    setup_logging(log_dir or ".", dist_ctx.rank)
-
-    logging.info("Run started")
-    logging.info(f"Distributed: {dist_ctx.is_distributed}")
-    logging.info(f"Rank: {dist_ctx.rank} / {dist_ctx.world_size}")
-
-    logging.info("Step 0 skeleton initialized successfully")
+    if ctx.is_master():
+        print("Initialization complete. Ready for next steps.")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        # Fail fast, fail loudly (production-style)
+        print("FATAL ERROR during training startup", file=sys.stderr)
+        traceback.print_exc()
+        sys.exit(1)
