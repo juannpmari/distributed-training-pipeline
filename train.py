@@ -16,6 +16,12 @@ from core.training.model import build_model
 from core.data.factory import build_dataset
 from core.data.state import DatasetState
 
+from core.distributed.ddp import wrap_ddp
+
+from core.tracking.logger import EventLogger
+from core.training.checkpoint import save_checkpoint
+
+
 
 def main():
     # ---- distributed context ----
@@ -27,12 +33,26 @@ def main():
         overrides={},
     )
 
+    if dist.is_rank_zero:
+        repro = run_ctx.root_dir / "reproduce.sh"
+        repro.write_text(
+            "#!/bin/bash\n"
+            f"python train.py --config {run_ctx.root_dir / 'resolved_config.yaml'}\n"
+        )
+        repro.chmod(0o755)
+
+
     # ---- run context ----
     run_ctx = create_run_context(
         base_dir=Path("runs"),
         experiment_name="llm_pretrain",
         resolved_config=cfg.to_dict(),
     )
+
+    logger = EventLogger(run_ctx.logs_dir / "events.jsonl")
+
+    if dist.is_rank_zero:
+        logger.log("run_start", {"run_id": run_ctx.run_id})
 
     cfg.save_yaml(run_ctx.root_dir / "resolved_config.yaml")
 
@@ -50,6 +70,8 @@ def main():
     # Step 3: model + optimizer
     # ============================
     model = build_model(cfg).to(dist.device)
+    if dist.world_size > 1:
+        model = wrap_ddp(model, device_id=dist.local_rank)
     loss_fn = build_loss(cfg)
     optimizer = build_optimizer(model, cfg)
 
@@ -82,10 +104,13 @@ def main():
             optimizer=optimizer,
             device=dist.device,
             epoch=epoch,
+            dist_ctx=dist,
         )
 
         if dist.is_rank_zero:
             print(f"[epoch {epoch}] metrics={metrics}")
+            path = save_checkpoint(run_ctx, model, optimizer, step, epoch)
+            logger.log("checkpoint_saved", {"path": str(path)})
 
 
 if __name__ == "__main__":

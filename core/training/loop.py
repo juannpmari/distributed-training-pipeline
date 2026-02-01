@@ -1,5 +1,6 @@
+# core/training/loop.py
 import torch
-from core.training.metrics import MetricTracker
+from core.distributed.sync import sync_and_validate_loss
 
 
 def train_one_epoch(
@@ -9,36 +10,31 @@ def train_one_epoch(
     optimizer,
     device,
     epoch,
-    log_every=10,
+    dist_ctx,
 ):
     model.train()
-    metrics = MetricTracker()
+    total_loss = 0.0
 
     for step, batch in enumerate(dataloader):
+        optimizer.zero_grad(set_to_none=True)
+
         inputs, targets = batch
         inputs = inputs.to(device)
         targets = targets.to(device)
 
-        # ---- forward ----
         outputs = model(inputs)
         loss = loss_fn(outputs, targets)
 
-        # ---- backward ----
-        optimizer.zero_grad(set_to_none=True)
         loss.backward()
-
-        # ---- step ----
         optimizer.step()
 
-        # ---- metrics ----
-        batch_size = inputs.size(0)
-        metrics.update(loss.item(), batch_size)
+        # Explicit DDP correctness check
+        if dist_ctx.world_size > 1:
+            loss = sync_and_validate_loss(loss)
 
-        if step % log_every == 0:
-            avg = metrics.compute()
-            print(
-                f"[epoch {epoch} step {step}] "
-                f"loss={avg['loss']:.4f}"
-            )
+        total_loss += loss.item()
 
-    return metrics.compute()
+        if dist_ctx.is_rank_zero and step % 100 == 0:
+            print(f"[Epoch {epoch} | Step {step}] loss={loss.item():.4f}")
+
+    return {"loss": total_loss / len(dataloader)}
