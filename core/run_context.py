@@ -5,7 +5,7 @@ import json
 import time
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True) # immutable config object
 class RunContext:
     run_id: str
     root_dir: Path
