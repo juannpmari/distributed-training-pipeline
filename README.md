@@ -23,34 +23,12 @@ Data Pipeline → Training Loop → Checkpointing
 ↓ ↓
 Metrics & Logs Runtime Monitors
 
-# LLM Distributed Training Pipeline — Architecture & Module Overview
+This project follows a Pipes-and-Filters architecture as its primary design pattern, adapted for large-scale, distributed ML training. It is supported by the following complementary patterns:
 
-This repository implements a **production-inspired, research-grade distributed training pipeline** for large language models.  
-Its design mirrors how **real labs organize training infrastructure**, while remaining readable, explicit, and extensible.
-
-This document explains the repository **from a module and pipeline perspective**:
-- What each module represents as a **component**
-- Its **role in the training pipeline**
-- Its **inputs and outputs**
-- How modules interact
-
-The goal is that a **research engineer can understand the system end-to-end by reading this file**.
-
----
-
-## High-Level Pipeline Overview
-
-At a conceptual level, the system is a **deterministic, replayable training pipeline**:
-
-```
-
-Config → RunContext → DistributedContext
-↓
-Data Pipeline → Training Loop → Checkpointing
-↓                ↓
-Metrics & Logs    Runtime Monitors
-
-```
+1. **Pipeline pattern** — data flows through a well-defined, ordered sequence of processing stages (streaming source → sharding → batching → training), each stage transforming the data incrementally.
+2. **Iterator / Pull-based streaming pattern** — all data components are lazy and iterable, enabling streaming over datasets larger than memory and precise control over consumption.
+3. **Explicit State & Checkpoint pattern** — all long-lived progress (dataset offsets, run metadata, RNG state) is modeled as serializable state, allowing deterministic resumption after failure.
+4. **Context Object pattern** — global concerns (run identity, filesystem layout, distributed rank/world info) are encapsulated in explicit context objects rather than implicit globals.
 
 Each layer is explicit:
 - **Configuration & context** define *what* is being run
