@@ -136,94 +136,83 @@ Relevant files:
 The `distributed` submodule encapsulates **all distributed execution concerns**.  
 No other part of the codebase reads environment variables or touches `torch.distributed` directly.
 
----
+This submodule is responsible for **process coordination, rank semantics, and collective correctness**. All higher-level training logic depends on this layer behaving deterministically and fail-fast.
 
-### `core/distributed/env.py`
-**Role:** Discover and normalize distributed environment variables.  
-**Inputs:** Process environment (e.g. `RANK`, `WORLD_SIZE`).  
-**Outputs:** A normalized dictionary describing the distributed setup.  
-**Interactions:**  
-- Used only by `init.py`
-- Abstracts over different launch styles (single-GPU, `torchrun`)
+### Process launch & rank semantics
+The runtime supports multiple launch styles (e.g. `torchrun`, single-GPU execution) while presenting a **uniform rank model** to the rest of the system.
 
----
+**Invariants:**
+- Each process has a globally unique `(global_rank, world_size)`
+- Each process has a `(local_rank, local_world_size)` within its node
+- Rank information is derived exclusively from the launcher environment
+- Training code never reads launcher-specific environment variables directly
 
-### `core/distributed/utils.py`
-**Role:** Centralize small distributed policies.  
-**Inputs:** Runtime state (e.g. CUDA availability).  
-**Outputs:** Backend choice (`nccl` / `gloo`), default timeouts.  
-**Interactions:**  
-- Used by process group initialization
-- Keeps policy decisions isolated and changeable
+Relevant files:
+- `core/distributed/env.py`  
+  Discovers rank, world size, and node topology from the environment.
+- `core/distributed/context.py`  
+  Defines the `DistributedContext` object used throughout the system.
 
 ---
 
-### `core/distributed/process_group.py`
-**Role:** Initialize PyTorch process groups.  
-**Inputs:** Backend, world size, global rank.  
-**Outputs:** A fully initialized `torch.distributed` runtime.  
-**Interactions:**  
-- Called only from `init.py`
-- No other module initializes or touches process groups
+### Process group initialization
+All collective communication is mediated through explicitly initialized process groups.
+
+**Invariants:**
+- Process groups are initialized exactly once
+- NCCL is used for GPU collectives; Gloo is used as a fallback where required
+- The backend choice is explicit and centrally controlled
+- Training code never calls `torch.distributed.init_process_group` directly
+
+Relevant files:
+- `core/distributed/init.py`  
+  Initializes and tears down distributed process groups.
+- `core/distributed/context.py`  
+  Stores initialized group handles and backend metadata.
 
 ---
 
-### `core/distributed/context.py`
-**Role:** Hold immutable facts about distributed execution.  
-**Inputs:** Ranks, world size, topology assumptions, backend.  
-**Outputs:** A frozen `DistributedContext` object.  
-**Interactions:**  
-- Created during distributed initialization
-- Embedded inside `RunContext`
-- Used throughout the system to reason about rank, master status, and topology
+### Topology abstraction
+The system assumes a **logically flat topology** while retaining enough structure to support node-local and global distinctions.
+
+**Invariants:**
+- Intra-node and inter-node communication are abstracted behind the same API
+- Local rank information is preserved for device placement and sharding
+- No training logic encodes assumptions about physical interconnects
+
+Relevant files:
+- `core/distributed/topology.py`  
+  Encodes node-local vs global rank relationships.
+- `core/distributed/context.py`  
+  Exposes topology metadata to downstream systems.
 
 ---
 
-### `core/distributed/init.py`
-**Role:** Bootstrap distributed execution (Step 1).  
-**Inputs:** Environment variables, CUDA availability.  
-**Outputs:** A fully constructed `DistributedContext`.  
-**Interactions:**  
-- Orchestrates `env.py`, `utils.py`, and `process_group.py`
-- Called exactly once at the start of `train.py`
-- Must run before any model, data, or pipeline code
+### Failure behavior & diagnostics
+The runtime is designed to **fail fast** and surface actionable diagnostics rather than masking distributed errors.
+
+**Invariants:**
+- Initialization failures abort the job immediately
+- Rank and topology metadata are always logged on startup
+- Partial initialization is not allowed
+
+Relevant files:
+- `core/distributed/init.py`
+- `core/distributed/utils.py`
 
 ---
 
-### `distributed/ddp.py`
+### Integration contract
+All distributed-aware components receive a `DistributedContext` instance.  
+No component may:
+- Inspect environment variables directly
+- Initialize process groups
+- Infer rank semantics implicitly
 
-**Role**
-- Apply DDP wrapping
-- Encapsulate DDP-specific behavior
+This enforces a **single distributed authority** across the codebase.
 
-**Inputs**
-- Model
-- Process group
-
-**Outputs**
-- DDP-wrapped model
-
----
-
-### `distributed/fsdp.py`
-
-**Role**
-- Apply FSDP / ZeRO-style sharding
-- Configure sharding, offload, and checkpoint format
-
-**Outputs**
-- Sharded model
-- FSDP state handles
-
----
-
-### `distributed/topology.py`
-
-**Role**
-- Abstract hardware topology assumptions
-- Currently flat, future extensible
-
----
+Primary interface:
+- `DistributedContext`
 
 ## Data Layer (Pipeline-First)
 
